@@ -1,13 +1,11 @@
 package com.example.studentmanagement;
 
-import java.util.HashMap;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.bcrypt.BCrypt;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -17,217 +15,150 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/auth")
 @CrossOrigin(origins = {
-    "http://localhost:5173",
-    "http://localhost:5175"
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175"
 })
 public class AuthController {
 
-    private final UserAccountRepository userRepository;
+    private final UserAccountRepository repository;
 
-    private final BCryptPasswordEncoder passwordEncoder =
-            new BCryptPasswordEncoder();
-
-    public AuthController(UserAccountRepository userRepository) {
-        this.userRepository = userRepository;
+    public AuthController(UserAccountRepository repository) {
+        this.repository = repository;
     }
 
-    // Register a student account
+    // STUDENT REGISTRATION
     @PostMapping("/register")
-    public ResponseEntity<Map<String, Object>> register(
-            @RequestBody RegisterRequest request) {
+    public ResponseEntity<?> register(
+            @RequestBody Map<String, String> data) {
 
-        if (request.getFullName() == null
-                || request.getFullName().isBlank()
-                || request.getEmail() == null
-                || request.getEmail().isBlank()
-                || request.getPassword() == null
-                || request.getPassword().length() < 8) {
+        String fullName = data.get("fullName");
+        String email = data.get("email");
+        String password = data.get("password");
+        String requestedRole = data.get("role");
 
-            return respond(
-                    HttpStatus.BAD_REQUEST,
-                    false,
-                    "Enter your name, email, and a password of at least 8 characters."
-            );
+        if (fullName == null || email == null || password == null
+                || fullName.isBlank() || email.isBlank()
+                || password.isBlank()) {
+
+            return ResponseEntity.badRequest().body(
+                    Map.of("message", "Please fill in all required fields"));
         }
 
-        String email = request.getEmail()
-                .trim()
-                .toLowerCase(Locale.ROOT);
+        email = email.trim().toLowerCase();
 
-        if (userRepository.existsByEmail(email)) {
-            return respond(
-                    HttpStatus.CONFLICT,
-                    false,
-                    "This email is already registered. Please log in."
-            );
+        if (repository.findByEmail(email).isPresent()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("message", "This email is already registered"));
         }
 
-        // Public registration is student-only.
-        UserAccount account = new UserAccount();
-        account.setFullName(request.getFullName().trim());
-        account.setEmail(email);
-        account.setPasswordHash(
-                passwordEncoder.encode(request.getPassword())
-        );
-        account.setRole("STUDENT");
+        /*
+         * Public registration creates STUDENT accounts only.
+         * Faculty accounts must be created or approved separately.
+         */
+        if (requestedRole != null
+                && requestedRole.trim().equalsIgnoreCase("FACULTY")) {
 
-        userRepository.save(account);
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(
+                    Map.of("message",
+                            "Faculty registration requires administrator approval"));
+        }
 
-        return respond(
-                HttpStatus.CREATED,
-                true,
-                "Registration successful. You can now log in."
-        );
+        UserAccount user = new UserAccount();
+        user.setFullName(fullName.trim());
+        user.setEmail(email);
+        user.setPasswordHash(
+                BCrypt.hashpw(password, BCrypt.gensalt()));
+        user.setRole("STUDENT");
+
+        UserAccount saved = repository.save(user);
+
+        return ResponseEntity.status(HttpStatus.CREATED).body(
+                Map.of(
+                        "message", "Registration successful",
+                        "id", saved.getId(),
+                        "fullName", saved.getFullName(),
+                        "email", saved.getEmail(),
+                        "role", saved.getRole()
+                ));
     }
 
-    // Log in a student or an existing faculty account
+    // STUDENT AND FACULTY LOGIN
     @PostMapping("/login")
-    public ResponseEntity<Map<String, Object>> login(
-            @RequestBody LoginRequest request) {
+    public ResponseEntity<?> login(
+            @RequestBody Map<String, String> data) {
 
-        if (request.getEmail() == null
-                || request.getPassword() == null
-                || request.getRole() == null
-                || request.getEmail().isBlank()
-                || request.getPassword().isBlank()
-                || request.getRole().isBlank()) {
+        String email = data.get("email");
+        String password = data.get("password");
+        String role = data.get("role");
 
-            return respond(
-                    HttpStatus.BAD_REQUEST,
-                    false,
-                    "Email, password, and role are required."
-            );
+        if (email == null || password == null || role == null
+                || email.isBlank() || password.isBlank()
+                || role.isBlank()) {
+
+            return ResponseEntity.badRequest().body(
+                    Map.of("message",
+                            "Email, password, and account type are required"));
         }
 
-        String email = request.getEmail()
-                .trim()
-                .toLowerCase(Locale.ROOT);
+        email = email.trim().toLowerCase();
+        role = role.trim().toUpperCase();
 
-        Optional<UserAccount> result =
-                userRepository.findByEmail(email);
+        Optional<UserAccount> result = repository.findByEmail(email);
 
         if (result.isEmpty()) {
-            return respond(
-                    HttpStatus.UNAUTHORIZED,
-                    false,
-                    "Invalid email or password."
-            );
+            return invalidLogin();
         }
 
-        UserAccount account = result.get();
+        UserAccount user = result.get();
 
-        // Passwords must be stored as BCrypt hashes.
-        if (account.getPasswordHash() == null
-                || !passwordEncoder.matches(
-                        request.getPassword(),
-                        account.getPasswordHash())) {
-
-            return respond(
-                    HttpStatus.UNAUTHORIZED,
-                    false,
-                    "Invalid email or password."
-            );
+        if (user.getRole() == null
+                || !role.equalsIgnoreCase(user.getRole().trim())) {
+            return invalidLogin();
         }
 
-        String requestedRole = request.getRole().trim();
-        String storedRole = account.getRole();
+        String storedPassword = user.getPasswordHash();
 
-        if (storedRole == null
-                || !storedRole.equalsIgnoreCase(requestedRole)) {
-
-            return respond(
-                    HttpStatus.UNAUTHORIZED,
-                    false,
-                    "Invalid email, password, or account type."
-            );
+        if (storedPassword == null || storedPassword.isBlank()) {
+            return invalidLogin();
         }
 
-        Map<String, Object> body = new HashMap<>();
-        body.put("success", true);
-        body.put("message", "Login successful.");
-        body.put("id", account.getId());
-        body.put("fullName", account.getFullName());
-        body.put("email", account.getEmail());
-        body.put("role", storedRole.toUpperCase(Locale.ROOT));
+        boolean passwordMatches;
 
-        return ResponseEntity.ok(body);
+        if (storedPassword.startsWith("$2a$")
+                || storedPassword.startsWith("$2b$")
+                || storedPassword.startsWith("$2y$")) {
+
+            passwordMatches = BCrypt.checkpw(password, storedPassword);
+
+        } else {
+            // Support accounts created with plain-text passwords previously.
+            passwordMatches = password.equals(storedPassword);
+
+            if (passwordMatches) {
+                user.setPasswordHash(
+                        BCrypt.hashpw(password, BCrypt.gensalt()));
+                repository.save(user);
+            }
+        }
+
+        if (!passwordMatches) {
+            return invalidLogin();
+        }
+
+        return ResponseEntity.ok(
+                Map.of(
+                        "message", "Login successful",
+                        "id", user.getId(),
+                        "fullName", user.getFullName(),
+                        "email", user.getEmail(),
+                        "role", user.getRole()
+                ));
     }
 
-    private ResponseEntity<Map<String, Object>> respond(
-            HttpStatus status,
-            boolean success,
-            String message) {
-
-        Map<String, Object> body = new HashMap<>();
-        body.put("success", success);
-        body.put("message", message);
-
-        return ResponseEntity.status(status).body(body);
-    }
-
-    public static class RegisterRequest {
-        private String fullName;
-        private String email;
-        private String password;
-
-        public RegisterRequest() {
-        }
-
-        public String getFullName() {
-            return fullName;
-        }
-
-        public void setFullName(String fullName) {
-            this.fullName = fullName;
-        }
-
-        public String getEmail() {
-            return email;
-        }
-
-        public void setEmail(String email) {
-            this.email = email;
-        }
-
-        public String getPassword() {
-            return password;
-        }
-
-        public void setPassword(String password) {
-            this.password = password;
-        }
-    }
-
-    public static class LoginRequest {
-        private String email;
-        private String password;
-        private String role;
-
-        public LoginRequest() {
-        }
-
-        public String getEmail() {
-            return email;
-        }
-
-        public void setEmail(String email) {
-            this.email = email;
-        }
-
-        public String getPassword() {
-            return password;
-        }
-
-        public void setPassword(String password) {
-            this.password = password;
-        }
-
-        public String getRole() {
-            return role;
-        }
-
-        public void setRole(String role) {
-            this.role = role;
-        }
+    private ResponseEntity<?> invalidLogin() {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(
+                Map.of("message",
+                        "Invalid email, password, or account type"));
     }
 }

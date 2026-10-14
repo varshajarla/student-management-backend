@@ -15,31 +15,31 @@ public class UserAccount {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(name = "full_name", nullable = false)
     private String fullName;
 
-    @Column(unique = true, nullable = false)
+    @Column(nullable = false, unique = true)
     private String email;
 
-    @Column(nullable = false)
+    @Column(name = "password_hash", nullable = false)
     private String passwordHash;
 
     @Column(nullable = false)
     private String role;
 
-    // Default constructor
     public UserAccount() {
     }
 
-    // Parameterized constructor
-    public UserAccount(String fullName, String email,
-                       String passwordHash, String role) {
+    public UserAccount(
+            String fullName,
+            String email,
+            String passwordHash,
+            String role) {
         this.fullName = fullName;
         this.email = email;
         this.passwordHash = passwordHash;
         this.role = role;
     }
-
-    // Getters and Setters
 
     public Long getId() {
         return id;
